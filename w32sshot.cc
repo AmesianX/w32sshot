@@ -5,6 +5,8 @@
 #include <psapi.h>
 #include <unistd.h>
 #include <assert.h>
+#include <iostream>
+#include <fstream>
 #include "W32Process.h"
 	
 /* ripped from vexllvm code */
@@ -17,8 +19,9 @@
 
 bool dumpProcess(W32Process* w32p, const char* path)
 {
-	FILE*	f;
-	char	f_path[MAX_PATH];
+	FILE*		f;
+	char		f_path[MAX_PATH];
+	uint64_t	entry_addr;
 
 	if (mkdir(path) != 0) {
 		std::cerr << "FAILED TO MAKE PATH: " << path << '\n';
@@ -33,30 +36,39 @@ bool dumpProcess(W32Process* w32p, const char* path)
 	fclose(f);
 
 	/* XXX: argv */
-	/* XXX: arch */
+	std::cerr << "[DUMP] NO ARGC!!!\n";
+	std::cerr << "[DUMP] NO ARGV!!!\n";
+
 	uint32_t arch = VEXLLVM_ARCH_I386;
 	INIT_FILE(arch);
 	fwrite(&arch, sizeof(arch), 1, f);
 	fclose(f);
 
-	/* XXX: entry */
-
-	/* XXX: regs */
-	INIT_FILE(regs)
-	HANDLE	h_thread;
-	CONTEXT	ctx;
-//	h_thread = OpenThread(
-//	the way to do this is to use thread32first() + snapshot.
-//	awful api
-	assert (0 == 1);
-	if (GetThreadContext(h_thread, &ctx) == false)
-		return false;
+	/* entry point */
+	entry_addr = w32p->getEntry();
+	INIT_FILE(entry);
+	fwrite(&entry_addr, sizeof(entry_addr), 1, f);
 	fclose(f);
 
-	/* XXX: syms */
+	sprintf(f_path, "%s/threads", path);
+	mkdir(f_path);
+	for (unsigned i = 0; i < w32p->getNumThreads(); i++) {
+		sprintf(f_path, "%s/threads/%d", path, i);
+		std::ofstream	of(f_path);
+		w32p->writeThread(of, i);
+	}
 
-	/* XXX: mapinfo */
-	/* XXX: maps/ */
+	sprintf(f_path, "%s/regs", path);
+	std::ofstream	*ofp = new std::ofstream(f_path);
+	w32p->writeThread(*ofp, 0);
+	delete ofp;
+
+	w32p->writeMemory(path);
+
+	sprintf(f_path, "%s/syms", path);
+	ofp = new std::ofstream(f_path);
+	w32p->writeSymbols(*ofp);
+	delete ofp;
 
 	return true;
 }
