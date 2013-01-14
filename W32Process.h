@@ -23,17 +23,26 @@ public:
 
 	uint64_t getEntry(void) const;
 	unsigned getNumThreads(void) const { return threads.size(); }
-	void writeThread(std::ostream& os, unsigned i) const;
+	void writeThreads(const char* path) const;
 	void writeMemory(const char* path) const;
 	void writeSymbols(std::ostream& os) const;
 protected:
 	W32Process(uint32_t _pid);
 private:
+	void writeThread(
+		std::ostream& os,
+		std::ostream& os2, unsigned i) const;
 	bool writeMemoryRegion(
 		const MEMORY_BASIC_INFORMATION*, std::ostream& os) const;
 	void readMappings(void);
 	void loadModules(void);
 	void loadThreads(void);
+	void loadLDT(void);
+	std::string findModName(void* base) const;
+
+	void writeMapInfo(const char* path) const;
+	void writeMaps(const char* path) const;
+
 	uint32_t	pid;
 	HANDLE		proc_h;
 
@@ -44,8 +53,15 @@ struct modinfo
 	unsigned	mi_len;
 };
 
+struct thread_ctx
+{
+	VexGuestX86State	ctx_regs;
+	uint64_t		ctx_ldt[VEX_GUEST_X86_GDT_NENT];
+};
+	uint64_t	ctx_gdt[VEX_GUEST_X86_GDT_NENT];
+
 	typedef std::vector<modinfo> modlist_ty;
-	typedef std::vector<VexGuestX86State>	threadlist_ty;
+	typedef std::vector<thread_ctx>	threadlist_ty;
 	typedef std::vector<MEMORY_BASIC_INFORMATION*> mmaplist_ty;
 	modlist_ty	mods;
 	mmaplist_ty	mmaps;

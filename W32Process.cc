@@ -11,11 +11,16 @@
 #include "vex.h"
 #include "W32Process.h"
 
+extern "C"
+int WINAPI NtQueryInformationProcess(HANDLE,DWORD,PVOID,ULONG,PULONG);
+
 W32Process::W32Process(uint32_t _pid)
 : pid(_pid)
 {
 	proc_h = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
 	loadModules();
+	loadThreads();
+	loadLDT();
 	readMappings();
 }
 
@@ -103,6 +108,8 @@ fail:
 
 uint64_t W32Process::getEntry(void) const
 {
+	return threads[0].ctx_regs.guest_EIP;
+#if 0
 	IMAGE_DOS_HEADER	*img_Doshdr;
 	IMAGE_FILE_HEADER	*img_Filehdr;
 	IMAGE_OPTIONAL_HEADER	*img_Optionalhdr;
@@ -127,6 +134,7 @@ uint64_t W32Process::getEntry(void) const
 
 	fclose(f);
 	return ret;
+#endif
 }
 
 static void ctx2vex(const CONTEXT* ctx, VexGuestX86State* vex)
@@ -151,7 +159,7 @@ static void ctx2vex(const CONTEXT* ctx, VexGuestX86State* vex)
 		vex->guest_FPREG[i] = v;
 	}
 
-	std::cerr << "[CTX2VEX] bad float control registers\n";
+//	std::cerr << "[CTX2VEX] bad float control registers\n";
 //	for (int i = 0; i < 8; i++)
 //      UChar guest_FPTAG[8];   /* 136 */
 //	vex->guest_FPROUND = ctx->;
@@ -159,10 +167,10 @@ static void ctx2vex(const CONTEXT* ctx, VexGuestX86State* vex)
 //	vex->guest_FTOP = ctx->;
 
 	/* SSE */
-	std::cerr << "[CTX2VEX] bad SSEROUND\n";
+//	std::cerr << "[CTX2VEX] bad SSEROUND\n";
 	// vex->guest_SSEROUND = ctx->;
 
-	std::cerr << "[CTX2VEX] probably wrong XMM\n";
+//	std::cerr << "[CTX2VEX] probably wrong XMM\n";
 	for (int i = 0; i < 8; i++) {
 		uint64_t	v1,v2;
 		v1 = ((uint64_t*)(&(ctx->ExtendedRegisters)))[2*i];
@@ -196,7 +204,7 @@ void W32Process::loadThreads(void)
 	do {
 		HANDLE	th;
 		CONTEXT	ctx;
-		VexGuestX86State	vex;
+		thread_ctx	tc;
 
 		if( te32.th32OwnerProcessID != pid ) continue;
 
@@ -208,10 +216,19 @@ void W32Process::loadThreads(void)
 #endif
 		th = OpenThread(THREAD_ALL_ACCESS, FALSE, te32.th32ThreadID);
 		GetThreadContext(th, &ctx);
+		for (	unsigned i = 0;
+			i < sizeof(tc.ctx_ldt)/sizeof(tc.ctx_ldt[0]);
+			i++)
+		{
+			GetThreadSelectorEntry(
+				th,
+				i*8, /* goes by ldt offset */
+				(LPLDT_ENTRY)&tc.ctx_ldt[i]);
+		}
 		CloseHandle(th);
 
-		ctx2vex(&ctx, &vex);
-		threads.push_back(vex);
+		ctx2vex(&ctx, &tc.ctx_regs);
+		threads.push_back(tc);
 	} while(Thread32Next(hThreadSnap, &te32 ));
 
 done:
@@ -219,10 +236,54 @@ done:
 }
 
 
-void W32Process::writeThread(std::ostream& os, unsigned i) const
-{ os.write((char*)&threads[i], sizeof(VexGuestX86State)); }
+void W32Process::writeThread(
+	std::ostream& os,
+	std::ostream& os2,
+	unsigned i) const
+{
+	os.write((char*)&threads[i].ctx_regs, sizeof(VexGuestX86State));
+	os2.write((char*)&threads[i].ctx_ldt, sizeof(threads[i].ctx_ldt));
+}
 
-void W32Process::writeMemory(const char* path) const
+void W32Process::writeThreads(const char* path) const
+{
+	char	f_path[512];
+
+	sprintf(f_path, "%s/threads", path);
+	mkdir(f_path);
+	for (unsigned i = 0; i < getNumThreads(); i++) {
+		sprintf(f_path, "%s/threads/%d", path, i);
+		std::ofstream	of(f_path, std::ios::binary);
+		sprintf(f_path, "%s/threads/%d.gdt", path, i);
+		std::ofstream	of2(f_path, std::ios::binary);
+		writeThread(of, of2, i);
+	}
+
+	sprintf(f_path, "%s/regs", path);
+	std::ofstream	of(f_path, std::ios::binary);
+	sprintf(f_path, "%s/regs.gdt", path);
+	std::ofstream	of2(f_path, std::ios::binary);
+	writeThread(of, of2,  0);
+
+	sprintf(f_path, "%s/regs.ldt", path);
+	std::ofstream	of3(f_path, std::ios::binary);
+	of3.write((char*)&ctx_gdt, sizeof(ctx_gdt));
+}
+
+void W32Process::loadLDT(void)
+{
+	memset(ctx_gdt, 0, sizeof(ctx_gdt));
+	for (unsigned i = 0; i < VEX_GUEST_X86_GDT_NENT; i++) {
+		DWORD buf[4], len;
+		buf[0] = i*8 & 0xFFFFFFF8;  // selector --> offset
+		buf[1] = 8; // size (multiple selectors may be added)
+		// google uses -1, I guess that means for self handle?
+		int res = NtQueryInformationProcess(proc_h,10,buf,16,&len);
+		memcpy(&ctx_gdt[i], &buf[2], 8);
+	}
+}
+
+void W32Process::writeMapInfo(const char* path) const
 {
 	char	s[512];
 	FILE	*f;
@@ -233,41 +294,79 @@ void W32Process::writeMemory(const char* path) const
 	f = fopen(s, "wb");
 	
 	for (unsigned i = 0; i < mmaps.size(); i++) {
-		int	flags = 0;
+		int		flags = 0;
 
 		if (mmaps[i]->Protect & PAGE_NOACCESS) continue;
 		if (mmaps[i]->Protect & PAGE_GUARD) continue;
 
 		if (mmaps[i]->Protect & PAGE_READONLY) flags |= 1;//PROT_READ;
 		if (mmaps[i]->Protect & PAGE_WRITECOPY) flags |= 2;//PROT_WRITE;
+		if (mmaps[i]->Protect & PAGE_READWRITE) flags |= 3;//PROT_READ;
 		if (mmaps[i]->Protect & PAGE_EXECUTE_READ)
 			flags |= 5;//PROT_READ | PROT_EXEC;
 		if (mmaps[i]->Protect & PAGE_EXECUTE_WRITECOPY)
 			flags |= 6;//PROT_WRITE | PROT_EXEC;
 
-		fprintf(f, "%p-%p %d 0 %s",
+		std::string	s = findModName(mmaps[i]->BaseAddress);
+
+		fprintf(f, "%p-%p %d 0 %s\n",
 			mmaps[i]->BaseAddress,
 			(uint8_t*)(mmaps[i]->BaseAddress)+mmaps[i]->RegionSize,
 			flags,
-			"XXXMAPTODLL");
+			s.c_str());
 	}
 	fclose(f);
 
+}
+
+void W32Process::writeMaps(const char* path) const
+{
+	char	s[512];
+	FILE	*f;
+
 	sprintf(s, "%s/maps", path);
-	mkdir(path);
+	mkdir(s);
 
 	for (unsigned i = 0; i < mmaps.size(); i++) {
 		bool ok;
 		if (mmaps[i]->Protect & PAGE_NOACCESS) continue;
 		if (mmaps[i]->Protect & PAGE_GUARD) continue;
 
-		sprintf(s, "%s/maps/%p", path, mmaps[i]->BaseAddress);
-		std::ofstream	of(path, std::ios::binary);
+		if (mmaps[i]->Protect == 0) {
+			std::cerr << "NO ACCESS TO "
+				<< mmaps[i]->BaseAddress << "--"
+				<< (void*)((char*)mmaps[i]->BaseAddress +
+					mmaps[i]->RegionSize)
+				<< '\n';
+			continue;
+		}
+
+		sprintf(s, "%s/maps/0x%x", path, (unsigned int)mmaps[i]->BaseAddress);
+		std::ofstream	of(s, std::ios::binary);
+
 		ok = writeMemoryRegion(mmaps[i], of);
+
+		if (!ok) std::cerr << GetLastError() << "-- OOPS!\n";
 		assert (ok && "BAD MEMORY WRITE?");
 	}
+
 }
 
+void W32Process::writeMemory(const char* path) const
+{
+	writeMapInfo(path);
+	writeMaps(path);
+}
+
+std::string W32Process::findModName(void* base) const
+{
+	for (unsigned i = 0; i < mods.size(); i++) {
+		if (base == mods[i].mi_base)
+			return mods[i].mi_name;
+	}
+
+	return "??MODULE??";
+}
 
 bool W32Process::writeMemoryRegion(
 	const MEMORY_BASIC_INFORMATION* mi, std::ostream& os) const
@@ -282,8 +381,11 @@ bool W32Process::writeMemoryRegion(
 			((char*)mi->BaseAddress) + 4096*i,
 			&page, 4096, &br);
 
-		if (!ok || br != 4096)
+		if (!ok || br != 4096) {
+			std::cerr << "OOPS: br=" << br << ". ADDR=" <<
+				(void*)(((char*)mi->BaseAddress) + 4096*i) << '\n';
 			return false;
+		}
 
 		os.write(page, 4096);
 	}
@@ -291,23 +393,57 @@ bool W32Process::writeMemoryRegion(
 	return true;
 }
 
+static BOOL enum_cb(LPSTR s, ULONG x, ULONG y, std::ostream* osp)
+{
+	std::ostream& os(*osp);
+	os << s << ' ' << (void*)x << "-" << (void*)(x + y) << '\n';
+	return TRUE;
+}
 
 void W32Process::writeSymbols(std::ostream& os) const
 {
+	BOOL			ok;
+	char			buf[1024];
+	PIMAGEHLP_SYMBOL	sym = (PIMAGEHLP_SYMBOL)&buf;
+
+
+	ok = SymInitialize(proc_h, NULL, TRUE);
+	assert(ok);
+
+	#if 0
 	for (unsigned i = 0; i < mods.size(); i++) {
-		ULONG64		base;
-
-		base = (ULONG64)(mods[i].mi_base);
-		for (unsigned j = 0;; j++) {
-			char		buf[1024];
-			PSYMBOL_INFO	sym = (PSYMBOL_INFO)&buf;
-
-			sym->SizeOfStruct = 1024;
-			if (!SymFromIndex(proc_h, base, j, sym)) break;
-			os	<< &sym->Name
-				<< (void*)sym->Address << "-"
-				<< (void*)(sym->Address + sym->Size)
-				<< '\n';
-		}
+		std::cerr << "KEEP GOING!! " << mods[i].mi_name << "\n";
+		SymEnumerateSymbols(
+			proc_h,
+			(DWORD)mods[i].mi_base,
+			(PSYM_ENUMSYMBOLS_CALLBACK)enum_cb,
+			(void*)&os);
 	}
+#endif
+#if 1
+	memset(sym, 0, 1024);
+	sym->SizeOfStruct = 1024;
+	sym->MaxNameLength = 512;
+
+	for (unsigned j = 0; j < mods.size(); j++) {
+	for (unsigned i = 0; i < mods[j].mi_len; i++) {
+		DWORD	disp;
+		ok = SymGetSymFromAddr(
+			proc_h,
+			((DWORD)mods[j].mi_base)+i,
+			&disp,
+			sym);
+		if (ok) { break; }
+	}
+
+	while (SymGetSymNext(proc_h, sym)) {
+		os	<< (char*)&sym->Name << ' '
+			<< (void*)sym->Address << "-"
+			<< (void*)(sym->Address + sym->Size)
+			<< '\n';
+	}
+	}
+	#endif
+
+	SymCleanup(proc_h);
 }

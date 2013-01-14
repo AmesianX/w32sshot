@@ -35,14 +35,22 @@ bool dumpProcess(W32Process* w32p, const char* path)
 		f);
 	fclose(f);
 
-	/* XXX: argv */
 	std::cerr << "[DUMP] NO ARGC!!!\n";
 	std::cerr << "[DUMP] NO ARGV!!!\n";
+	INIT_FILE(argv)
+	fclose(f);
+	INIT_FILE(argc)
+	fclose(f);
+
+	INIT_FILE(dynsyms)
+	fclose(f);
+
 
 	uint32_t arch = VEXLLVM_ARCH_I386;
 	INIT_FILE(arch);
 	fwrite(&arch, sizeof(arch), 1, f);
 	fclose(f);
+
 
 	/* entry point */
 	entry_addr = w32p->getEntry();
@@ -50,23 +58,14 @@ bool dumpProcess(W32Process* w32p, const char* path)
 	fwrite(&entry_addr, sizeof(entry_addr), 1, f);
 	fclose(f);
 
-	sprintf(f_path, "%s/threads", path);
-	mkdir(f_path);
-	for (unsigned i = 0; i < w32p->getNumThreads(); i++) {
-		sprintf(f_path, "%s/threads/%d", path, i);
-		std::ofstream	of(f_path);
-		w32p->writeThread(of, i);
-	}
+	assert (w32p->getNumThreads());
 
-	sprintf(f_path, "%s/regs", path);
-	std::ofstream	*ofp = new std::ofstream(f_path);
-	w32p->writeThread(*ofp, 0);
-	delete ofp;
+	w32p->writeThreads(path);
 
 	w32p->writeMemory(path);
 
 	sprintf(f_path, "%s/syms", path);
-	ofp = new std::ofstream(f_path);
+	std::ofstream* ofp = new std::ofstream(f_path, std::ios::binary);
 	w32p->writeSymbols(*ofp);
 	delete ofp;
 

@@ -2,13 +2,16 @@
 #define VEX_H
 #include <stdint.h>
 
-typedef uint32_t	UInt;
-struct U128 { char v[16]; };
-typedef uint16_t	UShort;
-typedef uint64_t	ULong;
-typedef uint8_t		UChar;
-typedef uint64_t	HWord;
+#define VEX_GUEST_X86_GDT_NENT	8192
+#define VEX_GUEST_X86_LDT_NENT	8192
 
+typedef uint8_t		UChar;
+typedef uint16_t	UShort;
+typedef uint32_t	UInt;
+typedef uint64_t	HWord;
+typedef uint64_t	ULong;
+struct U128 { char v[16]; };
+#pragma pack(1)
 struct VexGuestX86State {
       /* Event check fail addr and counter. */
       UInt  host_EvC_FAILADDR; /* 0 */
@@ -92,5 +95,8 @@ struct VexGuestX86State {
 
       /* Padding to make it have an 32-aligned size */
       UInt padding[5];
+      char	x;
 };
+#pragma pack()
+
 #endif
