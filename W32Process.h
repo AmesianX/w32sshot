@@ -7,6 +7,7 @@
 #include <assert.h>
 #include <iostream>
 
+#include "slurp.h"
 #include "vex.h"
 
 
@@ -26,6 +27,10 @@ public:
 	void writeThreads(const char* path) const;
 	void writeMemory(const char* path) const;
 	void writeSymbols(std::ostream& os) const;
+	void writePlatform(const char* path) const;
+
+	/* run this before going into debugging mode */
+	void slurpRemote(void);
 protected:
 	W32Process(uint32_t _pid);
 private:
@@ -66,6 +71,7 @@ struct thread_ctx
 	modlist_ty	mods;
 	mmaplist_ty	mmaps;
 	threadlist_ty	threads;
+	struct slurp_w32	slurp;
 };
 
 #endif

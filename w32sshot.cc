@@ -69,6 +69,10 @@ bool dumpProcess(W32Process* w32p, const char* path)
 	w32p->writeSymbols(*ofp);
 	delete ofp;
 
+	sprintf(f_path, "%s/platform", path);
+	mkdir(f_path);
+	w32p->writePlatform(f_path);
+
 	return true;
 }
 
@@ -110,6 +114,8 @@ ignore:
 		std::cerr << "Could not find " << argv[1] << '\n';
 		return -2;
 	}
+
+	w32p->slurpRemote();
 
 	std::cout << "Debugging: " << w32p->getExe() << '\n';
 	ok = DebugActiveProcess(w32p->getPID());

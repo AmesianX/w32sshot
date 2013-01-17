@@ -6,13 +6,11 @@
 #include <unistd.h>
 #include <winbase.h>
 #include <dbghelp.h>
+#include <ddk/ntapi.h>
 #include <fstream>
 #include "Sugar.h"
 #include "vex.h"
 #include "W32Process.h"
-
-extern "C"
-int WINAPI NtQueryInformationProcess(HANDLE,DWORD,PVOID,ULONG,PULONG);
 
 W32Process::W32Process(uint32_t _pid)
 : pid(_pid)
@@ -278,7 +276,12 @@ void W32Process::loadLDT(void)
 		buf[0] = i*8 & 0xFFFFFFF8;  // selector --> offset
 		buf[1] = 8; // size (multiple selectors may be added)
 		// google uses -1, I guess that means for self handle?
-		int res = NtQueryInformationProcess(proc_h,10,buf,16,&len);
+		int res = NtQueryInformationProcess(
+			proc_h,
+			ProcessLdtInformation,
+			buf,
+			16,
+			&len);
 		memcpy(&ctx_gdt[i], &buf[2], 8);
 	}
 }
@@ -400,6 +403,29 @@ static BOOL enum_cb(LPSTR s, ULONG x, ULONG y, std::ostream* osp)
 	return TRUE;
 }
 
+void W32Process::writePlatform(const char* path) const
+{
+	NTSTATUS			rc;
+	PROCESS_BASIC_INFORMATION	pbi;
+	char				fname[512];
+
+	rc = NtQueryInformationProcess(
+		proc_h,
+		ProcessBasicInformation,
+		&pbi,
+		sizeof(pbi),
+		NULL);
+	assert (rc == STATUS_SUCCESS && "Bad QueryInformationProcess");
+
+	sprintf(fname, "%s/pbi", path);
+	std::ofstream	of(fname, std::ios::binary);
+	of.write((char*)&pbi, sizeof(pbi));
+
+	sprintf(fname, "%s/process_cookie", path);
+	std::ofstream	of2(fname, std::ios::binary);
+	of2.write((char*)&slurp.cookie, sizeof(slurp.cookie));
+}
+
 void W32Process::writeSymbols(std::ostream& os) const
 {
 	BOOL			ok;
@@ -446,4 +472,68 @@ void W32Process::writeSymbols(std::ostream& os) const
 	#endif
 
 	SymCleanup(proc_h);
+}
+
+void W32Process::slurpRemote(void)
+{
+	void	*ll_fptr, *str_ptr;
+	HANDLE	thread_h, pipe_h;
+	HINSTANCE mod_h;
+	DWORD	rc;
+	SIZE_T	bw;
+
+	mod_h = GetModuleHandle("kernel32.dll");
+	ll_fptr = (void*)GetProcAddress(mod_h, "LoadLibraryA");
+	assert (ll_fptr != NULL && "Couldn't find load library");
+
+	str_ptr = VirtualAllocEx(proc_h, NULL, 4096, MEM_COMMIT, PAGE_READWRITE);
+	assert (str_ptr != NULL);
+
+	WriteProcessMemory(proc_h, str_ptr, "C:\\slurp.dll", 128, &bw);
+	assert (bw == 128);
+
+	pipe_h = CreateNamedPipe(
+		SLURP_PIPE,
+		//PIPE_ACCESS_INBOUND 
+		PIPE_ACCESS_DUPLEX 
+		| FILE_FLAG_FIRST_PIPE_INSTANCE,
+		PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+		PIPE_UNLIMITED_INSTANCES,
+		1024,
+		1024,
+		2000,
+		NULL);
+	assert (pipe_h != INVALID_HANDLE_VALUE);
+
+	thread_h = CreateRemoteThread(
+		proc_h,
+		NULL, 
+		0, 
+		(LPTHREAD_START_ROUTINE)ll_fptr,
+		str_ptr, 
+		0, 
+		NULL);
+	assert (thread_h != NULL && "Couldn't create remote thread");
+
+	std::cerr << "[SLURP] Waiting on pipe connection...\n";
+	rc = ConnectNamedPipe(pipe_h, NULL);
+	assert (rc == TRUE && "BAD CONNECT");
+
+	std::cerr << "[SLURP] Waiting on pipe data\n";
+	rc = ReadFile(pipe_h, &slurp, sizeof(slurp), &bw, NULL);
+	assert (rc == TRUE && "bad read pipe");
+	assert (bw == sizeof(slurp) && "bad slurp size");
+
+	DisconnectNamedPipe(pipe_h);
+	CloseHandle(pipe_h);
+
+	rc = WaitForSingleObject(thread_h, INFINITE);
+	assert (rc == WAIT_OBJECT_0);
+
+	VirtualFreeEx(proc_h, str_ptr, 4096, MEM_RELEASE);
+
+	CloseHandle(mod_h);
+	CloseHandle(thread_h);
+
+	std::cerr << "[Slurp] Thread done\n";
 }
