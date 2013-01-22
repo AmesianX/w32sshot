@@ -312,6 +312,7 @@ void W32Process::writeMapInfo(const char* path) const
 		if (mmaps[i]->Protect & PAGE_GUARD) continue;
 
 		if (mmaps[i]->Protect & PAGE_EXECUTE) flags |= 5;  // PROT_READ | PROT_EXEC
+		if (mmaps[i]->Protect & PAGE_EXECUTE_READWRITE) flags |= 7;
 		if (mmaps[i]->Protect & PAGE_READONLY) flags |= 1;//PROT_READ;
 		if (mmaps[i]->Protect & PAGE_WRITECOPY) flags |= 2;//PROT_WRITE;
 		if (mmaps[i]->Protect & PAGE_READWRITE) flags |= 3;//PROT_READ;
