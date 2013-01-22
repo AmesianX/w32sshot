@@ -30,10 +30,11 @@ public:
 	void writePlatform(const char* path) const;
 
 	/* run this before going into debugging mode */
-	void slurpRemote(void);
+	void slurpAll(void);
 protected:
 	W32Process(uint32_t _pid);
 private:
+	void slurpRemote(void);
 	void writeThread(
 		std::ostream& os,
 		std::ostream& os2, unsigned i) const;

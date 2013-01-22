@@ -8,7 +8,10 @@ endif
 
 #dlltool -k -d dbghelp.def -l dbghelp.a
 
-all: w32sshot slurp.dll
+all: w32sshot slurp.dll fake_7z
+
+fake_7z: fake_7z.o
+	$(CC) -o $@ $<
 
 w32sshot:  w32sshot.o W32Process.o
 	$(CPP) -static -o $@ $^ dbghelp.a -lpsapi -lkernel32 -lntdll

@@ -115,7 +115,7 @@ ignore:
 		return -2;
 	}
 
-	w32p->slurpRemote();
+	w32p->slurpAll();
 
 	std::cout << "Debugging: " << w32p->getExe() << '\n';
 	ok = DebugActiveProcess(w32p->getPID());

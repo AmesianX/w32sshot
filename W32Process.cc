@@ -17,9 +17,14 @@ W32Process::W32Process(uint32_t _pid)
 {
 	proc_h = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
 	loadModules();
+}
+
+void W32Process::slurpAll(void)
+{
 	loadThreads();
 	loadLDT();
 	readMappings();
+	slurpRemote();
 }
 
 void W32Process::readMappings(void)
@@ -299,9 +304,14 @@ void W32Process::writeMapInfo(const char* path) const
 	for (unsigned i = 0; i < mmaps.size(); i++) {
 		int		flags = 0;
 
+		std::cerr
+			<< "BASE=" << (void*)mmaps[i]->BaseAddress
+			<< ". PROTECT=" << (void*)mmaps[i]->Protect << '\n';
+
 		if (mmaps[i]->Protect & PAGE_NOACCESS) continue;
 		if (mmaps[i]->Protect & PAGE_GUARD) continue;
 
+		if (mmaps[i]->Protect & PAGE_EXECUTE) flags |= 5;  // PROT_READ | PROT_EXEC
 		if (mmaps[i]->Protect & PAGE_READONLY) flags |= 1;//PROT_READ;
 		if (mmaps[i]->Protect & PAGE_WRITECOPY) flags |= 2;//PROT_WRITE;
 		if (mmaps[i]->Protect & PAGE_READWRITE) flags |= 3;//PROT_READ;
