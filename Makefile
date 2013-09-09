@@ -1,7 +1,8 @@
 ifndef $(CC)
-CPP=i686-pc-mingw32-g++
-CC=i686-pc-mingw32-gcc
-
+#CPP=i686-pc-mingw32-g++
+#CC=i686-pc-mingw32-gcc
+CPP=mingw32-g++ -DPSAPI_VERSION=1 
+CC=mingw32-gcc -DPSAPI_VERSION=1 
 endif
 
 

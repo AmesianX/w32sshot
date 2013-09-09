@@ -51,6 +51,7 @@ private:
 
 	uint32_t	pid;
 	HANDLE		proc_h;
+	HANDLE		sshot_h;
 
 struct modinfo
 {

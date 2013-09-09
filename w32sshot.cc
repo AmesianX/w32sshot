@@ -76,29 +76,45 @@ bool dumpProcess(W32Process* w32p, const char* path)
 	return true;
 }
 
-int main(int argc, char* argv[])
+
+static std::string path_basename(const char* path)
 {
-	DEBUG_EVENT	de;
-	DWORD		pids[4096], used_bytes;
+	const char	*last_elem(strrchr(path, '\\'));
+	return (last_elem == NULL)
+		? path
+		: last_elem;
+}
+
+static W32Process* getRunningProcess(const char* path)
+{
 	W32Process	*w32p;
+	DWORD		pids[4096], used_bytes;
+	std::string	name;
 	BOOL		ok;
+
+	name = path_basename(path);
 
 	ok = EnumProcesses(pids, sizeof(pids), &used_bytes);
 	if (!ok) {
-		std::cerr << "Failed to enum processes\n";
-		return -1;
+		DWORD	err = GetLastError();
+		std::cerr << "Failed to EnumProcesses. Err=" << err << "\n";
+		SetLastError(0);
+		return NULL;
 	}
 
 	for (unsigned i = 0; i < used_bytes/sizeof(DWORD); i++) {
 		w32p = W32Process::create(pids[i]);
-		if (w32p == NULL)
+		if (w32p == NULL) {
+			std::cerr << "[W32Process] Could not open process for pid="
+				<< pids[i] << '\n';
 			continue;
+		}
 
 		if (w32p->getNumMods() <= 0)
 			goto ignore;
 
-		if (argc > 1) {
-			if (strcmp(w32p->getExe().c_str(), argv[1]) == 0)
+		if (path != NULL) {
+			if (path_basename(w32p->getExe().c_str()) == name)
 				break;
 		} else
 			std::cout << w32p->getExe() << '\n';
@@ -107,11 +123,23 @@ ignore:
 		w32p = NULL;
 	}
 
+	return w32p;
+}
+
+int main(int argc, char* argv[])
+{
+	DEBUG_EVENT	de;
+	W32Process	*w32p;
+	BOOL		ok;
+
+	w32p = getRunningProcess((argc <= 1) ? NULL: argv[1]);
 	if (argc < 2)
 		return 0;
 
 	if (w32p == NULL) {
-		std::cerr << "Could not find " << argv[1] << '\n';
+		std::cerr
+			<< "Could not find "
+			<< argv[1] << ". Is process running?\n";
 		return -2;
 	}
 

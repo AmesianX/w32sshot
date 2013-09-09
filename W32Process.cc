@@ -16,6 +16,24 @@ W32Process::W32Process(uint32_t _pid)
 : pid(_pid)
 {
 	proc_h = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
+	if (proc_h == 0 || proc_h == INVALID_HANDLE_VALUE)
+		return;
+
+	sshot_h = CreateToolhelp32Snapshot(TH32CS_SNAPALL, pid);
+	if (sshot_h == INVALID_HANDLE_VALUE) {
+		DWORD	err = GetLastError();
+		if (err == ERROR_PARTIAL_COPY) {
+			std::cerr
+				<< "[W32Process] 32-bit requesting 64-bit!\n";
+		} else {
+			std::cerr << "Snapshot Err=" << err << '\n';
+		}
+
+		CloseHandle(proc_h);
+		proc_h = 0;
+		return;
+	}
+
 	loadModules();
 }
 
@@ -59,9 +77,23 @@ void W32Process::loadModules(void)
 {
 	DWORD		used_bytes;
 	HMODULE		hmods[1024];
+	HANDLE		h;
 
-	if (!EnumProcessModules(proc_h, hmods, sizeof(hmods), &used_bytes))
+	h = proc_h; //(XP)
+//	h = sshot_h;
+
+	std::cerr << "PROC_H=" << proc_h << ". SSHOT_H=" << sshot_h << '\n';
+
+	if (!EnumProcessModules(h, hmods, sizeof(hmods), &used_bytes)) {
+		DWORD	err = GetLastError();
+		std::cerr << "[W32Process] Could not enum modules. PID= "
+			<< pid << ". Err=" << err << '\n';
+		SetLastError(0);
 		return;
+	}
+
+	std::cerr << "[W32Process] Getting modules used_bytes="
+		<< used_bytes << ". pid=" << pid << "\n";
 
 	for (unsigned i = 0; i < used_bytes/sizeof(HMODULE); i++) {
 		TCHAR		name[MAX_PATH];
@@ -69,27 +101,32 @@ void W32Process::loadModules(void)
 		modinfo		modi;
 		unsigned	sz = sizeof(name) / sizeof(TCHAR);
 
-		if (!GetModuleFileNameEx(proc_h, hmods[i], name, sz))
+		if (!GetModuleFileNameEx(h, hmods[i], name, sz)) {
+			std::cerr << "COULD NOT GET FILE NAME\n";
 			goto end;
+		}
 
-		if (!GetModuleInformation(proc_h, hmods[i], &mi, sizeof(mi)))
+		if (!GetModuleInformation(h, hmods[i], &mi, sizeof(mi))) {
+			std::cerr << "COULD NOT GET FILE INFO\n";
 			goto end;
+		}
+
+		std::cerr << "HEY: " << name << '\n';
 
 		modi.mi_name = name;
 		modi.mi_base = mi.lpBaseOfDll;
 		modi.mi_len = mi.SizeOfImage;
 		mods.push_back(modi);
-end:
-		CloseHandle(hmods[i]);
+end:		
+		if (h == proc_h)
+			CloseHandle(hmods[i]);
 	}
-
-
 }
 
 W32Process::~W32Process(void)
 {
-	if (proc_h != NULL)
-		CloseHandle(proc_h);
+	if (proc_h != NULL) CloseHandle(proc_h);
+	if (sshot_h != NULL) CloseHandle(sshot_h);
 
 	foreach (it, mmaps.begin(), mmaps.end())
 		delete (*it);
@@ -372,11 +409,15 @@ void W32Process::writeMemory(const char* path) const
 	writeMaps(path);
 }
 
-std::string W32Process::findModName(void* base) const
+std::string W32Process::findModName(void* b) const
 {
 	for (unsigned i = 0; i < mods.size(); i++) {
-		if (base == mods[i].mi_base)
+		if (	(uintptr_t)b >= (uintptr_t)mods[i].mi_base &&
+			(uintptr_t)b <(uintptr_t)mods[i].mi_base+mods[i].mi_len)
+		{
+			/* falls within DLL's image range */
 			return mods[i].mi_name;
+		}
 	}
 
 	return "??MODULE??";
@@ -418,6 +459,7 @@ void W32Process::writePlatform(const char* path) const
 {
 	NTSTATUS			rc;
 	PROCESS_BASIC_INFORMATION	pbi;
+	OSVERSIONINFO			ovi;
 	char				fname[512];
 
 	rc = NtQueryInformationProcess(
@@ -435,6 +477,17 @@ void W32Process::writePlatform(const char* path) const
 	sprintf(fname, "%s/process_cookie", path);
 	std::ofstream	of2(fname, std::ios::binary);
 	of2.write((char*)&slurp.cookie, sizeof(slurp.cookie));
+
+
+	ovi.dwOSVersionInfoSize = sizeof(ovi);
+	rc = GetVersionEx(&ovi);
+	sprintf(fname, "%s/version", path);
+	std::ofstream of3(fname, std::ios::binary);
+
+	of3.write((char*)&ovi.dwMajorVersion, 4);
+	of3.write((char*)&ovi.dwMinorVersion, 4);
+	of3.write((char*)&ovi.dwBuildNumber, 4);
+	of3.write((char*)&ovi.dwPlatformId, 4);
 }
 
 void W32Process::writeSymbols(std::ostream& os) const
@@ -463,24 +516,28 @@ void W32Process::writeSymbols(std::ostream& os) const
 	sym->MaxNameLength = 512;
 
 	for (unsigned j = 0; j < mods.size(); j++) {
-	for (unsigned i = 0; i < mods[j].mi_len; i++) {
-		DWORD	disp;
-		ok = SymGetSymFromAddr(
-			proc_h,
-			((DWORD)mods[j].mi_base)+i,
-			&disp,
-			sym);
-		if (ok) { break; }
-	}
+		DWORD	last_addr = 0;
 
-	while (SymGetSymNext(proc_h, sym)) {
-		os	<< (char*)&sym->Name << ' '
-			<< (void*)sym->Address << "-"
-			<< (void*)(sym->Address + sym->Size)
-			<< '\n';
+		/* find first address */
+		for (unsigned i = 0; i < mods[j].mi_len; i++) {
+			DWORD	disp;
+			DWORD	addr(((DWORD)mods[j].mi_base)+i);
+			ok = SymGetSymFromAddr(proc_h, addr, &disp, sym);
+			if (ok) { break; }
+		}
+
+		if (!ok) continue;
+
+		while (SymGetSymNext(proc_h, sym) && last_addr != sym->Address)
+		{
+			os	<< (char*)&sym->Name << ' '
+				<< (void*)sym->Address << "-"
+				<< (void*)(sym->Address + sym->Size)
+				<< '\n';
+			last_addr = sym->Address;
+		}
 	}
-	}
-	#endif
+#endif
 
 	SymCleanup(proc_h);
 }
